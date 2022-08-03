@@ -21,6 +21,7 @@ import { IModelTokensChangedEvent } from 'vs/editor/common/textModelEvents';
 import { Position } from 'vs/editor/common/core/position';
 import 'vs/css!./stickyScroll';
 import { Range } from 'vs/editor/common/core/range';
+import { binarySearch } from 'vs/base/common/arrays';
 
 class StickyScrollController extends Disposable implements IEditorContribution {
 
@@ -30,7 +31,7 @@ class StickyScrollController extends Disposable implements IEditorContribution {
 	private readonly _languageFeaturesService: ILanguageFeaturesService;
 	private readonly _sessionStore: DisposableStore = new DisposableStore();
 
-	private _ranges: [number, number, number][] = [];
+	private _ranges: [number, number, number, number][] = [];
 	private _rangesVersionId: number = 0;
 	private _cts: CancellationTokenSource | undefined;
 	private readonly _updateSoon: RunOnceScheduler;
@@ -141,7 +142,7 @@ class StickyScrollController extends Disposable implements IEditorContribution {
 			if (kind === SymbolKind.Class || kind === SymbolKind.Constructor || kind === SymbolKind.Function || kind === SymbolKind.Interface || kind === SymbolKind.Method || kind === SymbolKind.Module) {
 				currentStartLine = outlineElement?.symbol.range.startLineNumber as number;
 				currentEndLine = outlineElement?.symbol.range.endLineNumber as number;
-				this._ranges.push([currentStartLine, currentEndLine, depth]);
+				this._ranges.push([currentStartLine, currentEndLine, depth, 0]);
 				depth--;
 			}
 			if (outlineElement.parent instanceof OutlineElement) {
@@ -171,43 +172,109 @@ class StickyScrollController extends Disposable implements IEditorContribution {
 						this._findLineRanges(outline, 0);
 					}
 				}
-				this._ranges = this._ranges.sort(function (a, b) {
-					if (a[0] !== b[0]) {
-						return a[0] - b[0];
-					} else if (a[1] !== b[1]) {
-						return b[1] - a[1];
-					} else {
-						return a[2] - b[2];
+			}
+			this._ranges = this._ranges.sort(function (a, b) {
+				if (a[0] !== b[0]) {
+					return a[0] - b[0];
+				} else if (a[1] !== b[1]) {
+					return b[1] - a[1];
+				} else {
+					return a[2] - b[2];
+				}
+			});
+			let previous: number[] = [];
+			for (const [index, arr] of this._ranges.entries()) {
+				if (previous[0] === arr[0]) {
+					this._ranges.splice(index, 1);
+				} else {
+					previous = arr;
+				}
+			}
+			const stackOfParents = [0];
+			for (const [index, arr] of this._ranges.entries()) {
+				let currentParentIndex = stackOfParents[stackOfParents.length - 1];
+				let currentParent = this._ranges[currentParentIndex];
+				if (index === currentParentIndex) {
+					this._ranges[index][3] = index;
+				} else if (arr[0] >= currentParent[0] && arr[1] <= currentParent[1]) {
+					this._ranges[index][3] = currentParentIndex;
+					stackOfParents.push(index);
+				} else {
+					while (stackOfParents.length !== 0) {
+						stackOfParents.pop();
+						if (stackOfParents.length > 0) {
+							currentParentIndex = stackOfParents[stackOfParents.length - 1];
+							currentParent = this._ranges[currentParentIndex];
+							if (arr[0] >= currentParent[0] && arr[1] <= currentParent[1]) {
+								this._ranges[index][3] = currentParentIndex;
+								break;
+							}
+						}
 					}
-				});
-				let previous: number[] = [];
-				for (const [index, arr] of this._ranges.entries()) {
-					if (previous[0] === arr[0]) {
-						this._ranges.splice(index, 1);
-					} else {
-						previous = arr;
+					if (stackOfParents.length === 0) {
+						this._ranges[index][3] = index;
 					}
+					stackOfParents.push(index);
 				}
 			}
 		}
+	}
+
+	private _containsArray(set: Set<number[]>, array: number[]) {
+		for (const arr of set) {
+			if (arr.toString() === array.toString()) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private _renderStickyScroll() {
 		if (!(this._editor.hasModel())) {
 			return;
 		}
-		const lineHeight: number = this._editor.getOption(EditorOption.lineHeight);
 		const model = this._editor.getModel();
 		if (this._rangesVersionId !== model.getVersionId()) {
 			// Old _ranges not updated yet
 			return;
 		}
+		const line = this._editor.getVisibleRanges()[0].startLineNumber + this.stickyScrollWidget.codeLineCount - 1;
+		const index = binarySearch(this._ranges.map(function (arr) {
+			return arr[0];
+		}), line, (a, b) => { return a - b; });
+		let finalIndex;
+		if (index < 0) {
+			finalIndex = -(index + 1);
+		} else {
+			finalIndex = index;
+		}
+		const nRanges = this._ranges.length;
+		const rangesConsidered: Set<number[]> = new Set();
+		const sortedRanges = [];
+		for (let i = Math.max(0, finalIndex - 1); i <= Math.min(nRanges - 1, finalIndex + 1); i++) {
+			let rangeIndex = i;
+			while (true) {
+				const [start, end, depth, parent] = this._ranges[rangeIndex];
+				if (!this._containsArray(rangesConsidered, [start, end, depth, parent])) {
+					sortedRanges.push([start, end, depth, parent]);
+					rangesConsidered.add([start, end, depth, parent]);
+					if (rangeIndex === parent) {
+						break;
+					}
+					rangeIndex = parent;
+				} else {
+					break;
+				}
+			}
+		}
+		sortedRanges.sort(function (a, b) {
+			return a[0] - b[0];
+		});
+		const lineHeight: number = this._editor.getOption(EditorOption.lineHeight);
 		const scrollTop = this._editor.getScrollTop();
-
 		this.stickyScrollWidget.emptyRootNode();
-
-		for (const arr of this._ranges) {
-			const [start, end, depth] = arr;
+		for (const range of sortedRanges) {
+			const [start, end, depth, _parent] = range;
 			if (end - start > 0) {
 				const topOfElementAtDepth = (depth - 1) * lineHeight;
 				const bottomOfElementAtDepth = depth * lineHeight;
