@@ -173,7 +173,8 @@ class StickyScrollController extends Disposable implements IEditorContribution {
 					}
 				}
 			}
-			this._ranges = this._ranges.sort(function (a, b) {
+
+			this._ranges.sort(function (a, b) {
 				if (a[0] !== b[0]) {
 					return a[0] - b[0];
 				} else if (a[1] !== b[1]) {
@@ -182,14 +183,18 @@ class StickyScrollController extends Disposable implements IEditorContribution {
 					return a[2] - b[2];
 				}
 			});
-			let previous: number[] = [];
-			for (const [index, arr] of this._ranges.entries()) {
-				if (previous[0] === arr[0]) {
-					this._ranges.splice(index, 1);
+
+			const startLinesConsidered: Set<number[]> = new Set();
+
+			this._ranges = this._ranges.filter(arr => {
+				if (!this._containsArray(startLinesConsidered, arr)) {
+					startLinesConsidered.add(arr);
+					return true;
 				} else {
-					previous = arr;
+					return false;
 				}
-			}
+			});
+
 			const stackOfParents = [0];
 			for (const [index, arr] of this._ranges.entries()) {
 				let currentParentIndex = stackOfParents[stackOfParents.length - 1];
@@ -217,6 +222,7 @@ class StickyScrollController extends Disposable implements IEditorContribution {
 					stackOfParents.push(index);
 				}
 			}
+
 		}
 	}
 
@@ -287,7 +293,7 @@ class StickyScrollController extends Disposable implements IEditorContribution {
 					this.stickyScrollWidget.pushCodeLine(new StickyScrollCodeLine(start, depth, this._editor, -1, bottomOfEndLine - bottomOfElementAtDepth));
 					break;
 				}
-				else if (bottomOfElementAtDepth > bottomOfBeginningLine && bottomOfElementAtDepth < bottomOfEndLine - 1) {
+				else if (bottomOfBeginningLine < bottomOfElementAtDepth && bottomOfElementAtDepth < bottomOfEndLine - 1) {
 					this.stickyScrollWidget.pushCodeLine(new StickyScrollCodeLine(start, depth, this._editor, 0, 0));
 				}
 			}
